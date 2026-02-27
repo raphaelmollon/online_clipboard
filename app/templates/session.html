@@ -1,0 +1,351 @@
+{% extends "base.html" %}
+{% block title %}Session {{ sid }} — Clipboard{% endblock %}
+{% block header_title %}Session Active{% endblock %}
+{% block header_sub %}<div class="header-sub">Authenticated · Wipes in <span id="ttlDisplay">2h 00m</span> · <span id="liveIndicator" style="color:var(--fg-muted)">⬤ connecting…</span></div>{% endblock %}
+
+{% block content %}
+
+<!-- Session URL -->
+<div class="url-box">
+  <span class="url-text" id="sessionUrl"></span>
+  <button class="copy-btn" onclick="copyUrl()">copy url</button>
+</div>
+
+<!-- TTL bar -->
+<div class="ttl-label">
+  <span>Session expires</span>
+  <span id="ttlPercent">100%</span>
+</div>
+<div class="ttl-bar-wrap">
+  <div class="ttl-bar" id="ttlBar"></div>
+</div>
+
+<!-- Items list -->
+<div class="panel">
+  <div class="panel-label">Clipboard items</div>
+  <div id="itemsList">
+    <div class="muted blink">Loading…</div>
+  </div>
+</div>
+
+<!-- New session (shown only after expiry/wipe) -->
+<div class="panel" id="newSessionPanel" style="display:none; animation-delay:.1s">
+  <div class="flex-row flex-end">
+    <a href="/" class="btn btn-primary">+ New session</a>
+  </div>
+</div>
+
+<!-- Add more -->
+<div class="panel" id="addPanel" style="animation-delay:.15s">
+  <div class="panel-label">Add more</div>
+  <div class="field">
+    <label for="newText" style="display:flex; justify-content:space-between;">
+      <span style="opacity:0">​</span>
+      <span id="addSizeIndicator" class="muted">0 B / 500 KB</span>
+    </label>
+    <textarea id="newText" placeholder="Paste more data… (Ctrl+Enter to submit)"></textarea>
+  </div>
+  <div class="flex-row flex-end">
+    <span id="addStatus" class="muted" style="margin-right:auto"></span>
+    <button class="btn btn-primary" id="addBtn" onclick="addItem()">Add →</button>
+  </div>
+</div>
+
+<!-- Actions -->
+<div class="panel" id="actionsPanel" style="animation-delay:.2s">
+  <div class="panel-label">Actions</div>
+  <div class="flex-row">
+    <button class="btn btn-ghost" onclick="window.open('/', '_blank')">+ New session</button>
+    <button class="btn btn-danger" onclick="confirmWipe()">⚠ Wipe session</button>
+  </div>
+</div>
+
+<!-- Wipe confirmation overlay -->
+<div id="wipeOverlay" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.75); z-index:100; align-items:center; justify-content:center;">
+  <div class="panel" style="width:100%; max-width:420px; margin:1rem;">
+    <div class="panel-label">Confirm wipe</div>
+    <p class="muted" style="margin-bottom:1.25rem; line-height:1.9">
+      This will immediately and permanently delete all data in this session.
+      This action cannot be undone.
+    </p>
+    <div class="flex-row flex-end">
+      <button class="btn btn-ghost" onclick="closeWipe()">Cancel</button>
+      <button class="btn btn-danger" onclick="doWipe()">Delete everything</button>
+    </div>
+  </div>
+</div>
+
+<script>
+  /* global sid, TTL_SECONDS */
+  const sid         = {{ sid | tojson }}; // injected by Jinja2
+  const TTL_SECONDS = {{ ttl }};
+  const sessionUrl  = window.location.href.split('?')[0];
+  let   startTime   = Date.now();
+  let   knownCount  = 0;
+  let   sseSource   = null;
+
+  // ---------------------------------------------------------------------------
+  // URL display
+  // ---------------------------------------------------------------------------
+  document.getElementById('sessionUrl').textContent = sessionUrl;
+
+  function copyUrl() {
+    navigator.clipboard.writeText(sessionUrl);
+    const btn = document.querySelector('.url-box .copy-btn');
+    btn.textContent = 'copied!';
+    btn.classList.add('copied');
+    setTimeout(() => { btn.textContent = 'copy url'; btn.classList.remove('copied'); }, 1500);
+  }
+
+  // ---------------------------------------------------------------------------
+  // TTL countdown
+  // ---------------------------------------------------------------------------
+  function updateTTL() {
+    const elapsed   = (Date.now() - startTime) / 1000;
+    const remaining = Math.max(0, TTL_SECONDS - elapsed);
+    const pct       = Math.max(0, (remaining / TTL_SECONDS) * 100);
+    const h = Math.floor(remaining / 3600);
+    const m = Math.floor((remaining % 3600) / 60);
+    const s = Math.floor(remaining % 60);
+
+    document.getElementById('ttlDisplay').textContent =
+      `${h}h ${String(m).padStart(2,'0')}m ${String(s).padStart(2,'0')}s`;
+    document.getElementById('ttlPercent').textContent = `${Math.round(pct)}%`;
+
+    const bar = document.getElementById('ttlBar');
+    bar.style.width = `${pct}%`;
+    bar.style.background = pct > 50 ? 'var(--accent)' : pct > 20 ? 'var(--warn)' : 'var(--danger)';
+  }
+  const ttlInterval = setInterval(updateTTL, 1000);
+  updateTTL();
+
+  // ---------------------------------------------------------------------------
+  // Render items
+  // ---------------------------------------------------------------------------
+  function renderItems(items) {
+    const container = document.getElementById('itemsList');
+    if (!items.length) {
+      container.innerHTML = '<div class="muted">No items yet.</div>';
+      knownCount = 0;
+      return;
+    }
+    if (items.length === knownCount) return;
+    knownCount = items.length;
+
+    container.innerHTML = items.map((text, i) => `
+      <div class="item-card" style="animation-delay:${i * 0.05}s">
+        <div class="item-card-header">
+          <span class="item-index">#${String(i+1).padStart(2,'0')}</span>
+          <button class="copy-btn" onclick="copyItem(this, ${i})">copy</button>
+        </div>
+        <div class="item-text" id="item-${i}">${escHtml(text)}</div>
+        <div style="text-align:right; margin-top:.35rem;">
+          <span class="muted" style="font-size:.65rem;">${formatSize(new Blob([text]).size)}</span>
+        </div>
+      </div>
+    `).join('');
+  }
+
+  function formatSize(bytes) {
+    if (bytes === 0) return '0 B';
+    if (bytes < 1024) return `${bytes} B`;
+    return `${(bytes / 1024).toFixed(1)} KB`;
+  }
+
+  function escHtml(str) {
+    return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  function copyItem(btn, idx) {
+    navigator.clipboard.writeText(document.getElementById(`item-${idx}`).textContent);
+    btn.textContent = 'copied!';
+    btn.classList.add('copied');
+    setTimeout(() => { btn.textContent = 'copy'; btn.classList.remove('copied'); }, 1500);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Fetch items — password is in httponly cookie, sent automatically by browser
+  // JS never touches the password
+  // ---------------------------------------------------------------------------
+  async function fetchItems() {
+    const res = await fetch(`/${sid}/items`);
+    if (res.status === 410) { handleExpired('locked');  return; }
+    if (res.status === 404) { handleExpired('expired'); return; }
+    const data = await res.json();
+    renderItems(data.items || []);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Session end states
+  // ---------------------------------------------------------------------------
+  function handleExpired(reason) {
+    if (sseSource) { sseSource.close(); sseSource = null; }
+    sessionAlive = false; // Stops polling from overwriting the message
+
+    const messages = {
+      locked:  { cls: 'danger', text: '⚠ Session locked after too many failed attempts. All data has been permanently destroyed.' },
+      wiped:   { cls: 'warn',   text: '🗑 This session was manually wiped. All data has been deleted.' },
+      expired: { cls: 'warn',   text: '⏱ Session expired after 2 hours of inactivity. All data has been automatically deleted.' },
+    };
+    const { cls, text } = messages[reason] || messages.expired;
+
+    document.getElementById('itemsList').innerHTML =
+      `<div class="alert alert-${cls}">${text}</div>`;
+    document.getElementById('ttlBar').style.cssText = 'width:0%; background:var(--danger)';
+    document.getElementById('addPanel').style.display       = 'none';
+    document.getElementById('actionsPanel').style.display    = 'none';
+    document.getElementById('newSessionPanel').style.display = 'block';
+
+    // Stop TTL countdown
+    clearInterval(ttlInterval);
+    document.getElementById('ttlDisplay').textContent = '--';
+    document.getElementById('ttlPercent').textContent = '--';
+
+    // Flatten TTL bar
+    document.getElementById('ttlBar').style.cssText = 'width:0%; background:var(--danger)';
+
+    // Kill live indicator
+    const live = document.getElementById('liveIndicator');
+    if (live) { live.textContent = '⬤ offline'; live.style.color = 'var(--fg-muted)'; }
+
+    // Update page title
+    document.querySelector('.header-title').textContent = 'Session Ended';
+  }
+
+  // ---------------------------------------------------------------------------
+  // SSE
+  // ---------------------------------------------------------------------------
+  function connectSSE() {
+    if (sseSource) sseSource.close();
+    sseSource = new EventSource(`/${sid}/stream`);
+
+    sseSource.onopen = () => {
+      const el = document.getElementById('liveIndicator');
+      if (el) { el.textContent = '⬤ live'; el.style.color = 'var(--accent)'; }
+    };
+
+    sseSource.onmessage = async (e) => {
+      if (e.data === 'new_item')        await fetchItems();
+      if (e.data === 'session_expired') handleExpired('expired');
+      if (e.data === 'session_locked')  handleExpired('locked');
+      if (e.data === 'session_wiped')   handleExpired('wiped');
+    };
+
+    sseSource.onerror = () => {
+      const el = document.getElementById('liveIndicator');
+      if (el) { el.textContent = '⬤ reconnecting…'; el.style.color = 'var(--warn)'; }
+    };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Add item — password sent automatically via cookie
+  // ---------------------------------------------------------------------------
+  async function addItem() {
+    const text   = document.getElementById('newText').value.trim();
+    const status = document.getElementById('addStatus');
+    const btn    = document.getElementById('addBtn');
+    if (!text) return;
+
+    btn.disabled = true;
+    status.textContent = 'Saving…';
+
+    const body = new URLSearchParams({ text });
+    const res  = await fetch(`/${sid}/add`, {
+      method: 'POST',
+      body,
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    });
+
+    if (res.ok) {
+      document.getElementById('newText').value = '';
+      status.textContent = '✓ Added';
+      setTimeout(() => { status.textContent = ''; }, 2000);
+      startTime = Date.now();
+    } else {
+      if (res.status === 404) { handleExpired('expired'); return; }
+      if (res.status === 410) { handleExpired('locked');  return; }
+      status.textContent = '✗ Error';
+    }
+    btn.disabled = false;
+  }
+
+  const MAX_SIZE = 500_000;
+  document.getElementById('newText').addEventListener('input', () => {
+    const size  = new Blob([document.getElementById('newText').value]).size;
+    const el    = document.getElementById('addSizeIndicator');
+    el.textContent  = `${formatSize(size)} / 500 KB`;
+    el.style.color  = size > MAX_SIZE ? 'var(--danger)' : size > MAX_SIZE * 0.8 ? 'var(--warn)' : '';
+  });
+
+  document.getElementById('newText').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) addItem();
+  });
+
+  // ---------------------------------------------------------------------------
+  // Wipe session
+  // ---------------------------------------------------------------------------
+  function confirmWipe() {
+    document.getElementById('wipeOverlay').style.display = 'flex';
+  }
+  function closeWipe() {
+    document.getElementById('wipeOverlay').style.display = 'none';
+  }
+  async function doWipe() {
+    closeWipe();
+    if (sseSource) { sseSource.close(); sseSource = null; }
+    await fetch(`/${sid}/wipe`, { method: 'POST' });
+    window.location.href = '/';
+  }
+
+  // ---------------------------------------------------------------------------
+  // Page Visibility API — force immediate state check when tab regains focus
+  // Browsers throttle SSE in background tabs, so events may be delayed.
+  // On visibility change we immediately check session status without waiting
+  // for the next heartbeat.
+  // ---------------------------------------------------------------------------
+  document.addEventListener('visibilitychange', async () => {
+    if (document.visibilityState === 'visible') {
+      // Re-check session immediately
+      const res = await fetch(`/${sid}/items`).catch(() => null);
+      if (!res) return;
+      if (res.status === 410) { handleExpired('locked');  return; }
+      if (res.status === 404) { handleExpired('expired'); return; }
+      const data = await res.json().catch(() => ({}));
+      // Check if server sent a wipe signal via a custom header
+      renderItems(data.items || []);
+      // Reconnect SSE if it dropped while in background
+      if (!sseSource || sseSource.readyState === EventSource.CLOSED) {
+        connectSSE();
+      }
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  // Polling fallback — checks session liveness every 10s regardless of
+  // tab visibility or focus. Covers the case where the tab is physically
+  // visible on screen but the SSE event was missed (background throttling,
+  // network hiccup, or the user is interacting with another screen).
+  // Cost: one lightweight HTTP request per 10s — negligible.
+  // ---------------------------------------------------------------------------
+  let sessionAlive = true;
+
+  async function pollSessionStatus() {
+    if (!sessionAlive) return; // Already handled
+    const res = await fetch(`/${sid}/items`).catch(() => null);
+    if (!res) return; // Network error — will retry next tick
+    if (res.status === 410) { sessionAlive = false; handleExpired('locked');  return; }
+    if (res.status === 404) { sessionAlive = false; handleExpired('expired'); return; }
+    // 200 — session alive, update items if count changed (SSE may have missed it)
+    const data = await res.json().catch(() => ({}));
+    renderItems(data.items || []);
+  }
+
+  setInterval(pollSessionStatus, 10_000);
+
+  // ---------------------------------------------------------------------------
+  // Init — no password handling needed, server does it all
+  // ---------------------------------------------------------------------------
+  fetchItems();
+  connectSSE();
+</script>
+{% endblock %}

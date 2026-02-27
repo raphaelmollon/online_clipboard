@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}Session Not Found{% endblock %}
+{% block header_title %}Session Not Found{% endblock %}
+{% block header_sub %}<div class="header-sub">Expired, never existed, or already wiped.</div>{% endblock %}
+
+{% block content %}
+<div class="panel">
+  <div class="alert alert-warn">
+    Session <code>{{ sid }}</code> does not exist.
+  </div>
+  <p class="muted" style="margin-bottom:1.5rem; line-height:1.9">
+    Sessions are automatically deleted after 2 hours of inactivity.
+    If you believe this session should exist, it may have already expired.
+  </p>
+  <a href="/" class="btn btn-ghost">← Create a new session</a>
+</div>
+{% endblock %}

@@ -1,0 +1,23 @@
+# Environment — contains SERVER_SECRET, never commit
+.env
+
+# Docker
+mnt/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# VS Code
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log

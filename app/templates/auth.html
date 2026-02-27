@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+{% block title %}Authenticate — {{ sid }}{% endblock %}
+{% block header_title %}Enter Session{% endblock %}
+{% block header_sub %}<div class="header-sub">Session <code style="color:var(--accent)">{{ sid }}</code></div>{% endblock %}
+
+{% block content %}
+<div class="panel" id="authPanel">
+  <div class="panel-label">Authentication</div>
+
+  <div id="errorBox" style="display:none"></div>
+
+  <div class="field">
+    <label for="password">Password</label>
+    <input type="password" id="password" placeholder="Enter session password" autocomplete="current-password" autofocus>
+  </div>
+
+  <div class="flex-row flex-end">
+    <a href="/" class="btn btn-ghost">New session</a>
+    <button class="btn btn-primary" id="authBtn" onclick="doAuth()">
+      Submit →
+    </button>
+  </div>
+</div>
+
+<script>
+  const sid = {{ sid | tojson }};
+
+  async function doAuth() {
+    const btn = document.getElementById('authBtn');
+    const pwd = document.getElementById('password').value;
+    const errorBox = document.getElementById('errorBox');
+
+    btn.disabled = true;
+    btn.textContent = 'Checking…';
+    errorBox.style.display = 'none';
+
+    const body = new URLSearchParams({ password: pwd });
+
+    try {
+      const res = await fetch(`/${sid}/auth`, {
+        method: 'POST',
+        body,
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        redirect: 'follow',
+      });
+
+      if (res.ok || res.redirected) {
+        window.location.href = res.url || `/${sid}`;
+        return;
+      }
+
+      const data = await res.json().catch(() => ({}));
+
+      if (res.status === 410) {
+        errorBox.className = 'alert alert-danger';
+        errorBox.textContent = '⚠ Session has been locked due to too many failed attempts. Data is gone forever.';
+        errorBox.style.display = 'block';
+        btn.disabled = true;
+        return;
+      }
+
+      if (res.status === 429) {
+        const type = data.ban_type === 'perm' ? 'permanently' : 'temporarily';
+        errorBox.className = 'alert alert-danger';
+        errorBox.textContent = `Your IP has been ${type} banned due to too many failed attempts.`;
+        errorBox.style.display = 'block';
+        btn.disabled = true;
+        return;
+      }
+
+      if (res.status === 401) {
+        const remaining = data.attempts_remaining ?? '?';
+        errorBox.className = 'alert alert-danger';
+        errorBox.textContent = `Wrong password. ${remaining} attempt(s) remaining before lockout.`;
+        errorBox.style.display = 'block';
+      }
+
+    } catch (err) {
+      errorBox.className = 'alert alert-warn';
+      errorBox.textContent = 'Network error. Please try again.';
+      errorBox.style.display = 'block';
+    }
+
+    btn.disabled = false;
+    btn.textContent = 'Submit →';
+  }
+
+  // Allow Enter key
+  document.getElementById('password')?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') doAuth();
+  });
+</script>
+{% endblock %}

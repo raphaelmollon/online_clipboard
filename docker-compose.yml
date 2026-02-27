@@ -1,0 +1,35 @@
+services:
+
+  app:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8000:8000"   # Only exposed to localhost — Nginx handles public TLS
+    env_file: .env
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - internal
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # No persistence — data is intentionally ephemeral
+    command: >
+      redis-server
+      --save ""
+      --appendonly no
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+networks:
+  internal:
+    driver: bridge

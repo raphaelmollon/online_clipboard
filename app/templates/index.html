@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% block title %}New Session — Clipboard{% endblock %}
+{% block header_title %}New Session{% endblock %}
+{% block header_sub %}<div class="header-sub">Paste your data. Share the link. Gone in 2 hours.</div>{% endblock %}
+
+{% block content %}
+<form method="POST" action="/" id="createForm">
+  <div class="panel">
+    <div class="panel-label">Content</div>
+    <div class="field">
+      <label for="text" style="display:flex; justify-content:space-between;">
+        <span>Data to share</span>
+        <span id="sizeIndicator" class="muted">0 B / 500 KB</span>
+      </label>
+      <textarea name="text" id="text" placeholder="Paste text, credentials, notes…" required autofocus></textarea>
+    </div>
+
+    <div class="field">
+      <label for="password">Password <span class="muted">(optional — leave empty for link-only access)</span></label>
+      <input type="password" name="password" id="password" placeholder="Any characters, up to 50" maxlength="50" autocomplete="new-password">
+    </div>
+
+    <div class="sep"></div>
+
+    <div class="toggle-row">
+      <label class="switch">
+        <input type="checkbox" name="secure_mode" id="secure_mode" value="true">
+        <span class="switch-track"></span>
+      </label>
+      <label class="toggle-label" for="secure_mode">Extended session ID</label>
+      <span class="toggle-hint" id="secureHint">5-char ID (~916M combos)</span>
+    </div>
+
+    <div class="flex-row flex-end">
+      <button type="submit" class="btn btn-primary" id="submitBtn">
+        <span>Create session</span>
+        <span>→</span>
+      </button>
+    </div>
+  </div>
+</form>
+
+<div class="panel" style="animation-delay:.1s">
+  <div class="panel-label">How it works</div>
+  <div class="muted" style="line-height:2">
+    <div>① Paste your data and optionally set a password</div>
+    <div>② Share the session URL with another machine</div>
+    <div>③ Retrieve and decrypt your data within 2 hours</div>
+    <div>④ Everything is wiped automatically — no traces left</div>
+  </div>
+</div>
+
+<script>
+  const toggle = document.getElementById('secure_mode');
+  const hint   = document.getElementById('secureHint');
+
+  toggle.addEventListener('change', () => {
+    hint.textContent = toggle.checked
+      ? '50-char ID (brute-force proof)'
+      : '5-char ID (~916M combos)';
+  });
+
+  function formatSize(bytes) {
+    if (bytes === 0) return '0 B';
+    if (bytes < 1024) return `${bytes} B`;
+    return `${(bytes / 1024).toFixed(1)} KB`;
+  }
+
+  const textarea = document.getElementById('text');
+  const sizeEl   = document.getElementById('sizeIndicator');
+  const MAX      = 500_000;
+
+  textarea.addEventListener('input', () => {
+    const size = new Blob([textarea.value]).size;
+    sizeEl.textContent = `${formatSize(size)} / 500 KB`;
+    sizeEl.style.color = size > MAX ? 'var(--danger)' : size > MAX * 0.8 ? 'var(--warn)' : '';
+  });
+
+  document.getElementById('createForm').addEventListener('submit', (e) => {
+    const btn = document.getElementById('submitBtn');
+    btn.disabled = true;
+    btn.querySelector('span').textContent = 'Creating…';
+  });
+</script>
+{% endblock %}
