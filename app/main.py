@@ -36,7 +36,7 @@ from fastapi.templating import Jinja2Templates
 
 import session as sess
 import security as sec
-from config import SESSION_TTL_SECONDS, DEBUG, APP_VERSION
+from config import SESSION_TTL_SECONDS, DEBUG, APP_VERSION, SSE_ENABLED
 
 
 # ---------------------------------------------------------------------------
@@ -50,9 +50,16 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan, docs_url="/docs" if DEBUG else None)
+
+# Trust proxy headers (Passenger/Nginx forward requests as HTTP internally)
+# This ensures cookies are set correctly even behind a reverse proxy
+from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
+app.add_middleware(ProxyHeadersMiddleware, trusted_hosts="*")
+
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 templates.env.globals["app_version"] = APP_VERSION
+templates.env.globals["sse_enabled"] = SSE_ENABLED
 
 
 # ---------------------------------------------------------------------------

@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Session {{ sid }} — Clipboard{% endblock %}
 {% block header_title %}Session Active{% endblock %}
-{% block header_sub %}<div class="header-sub">Authenticated · Wipes in <span id="ttlDisplay">2h 00m</span> · <span id="liveIndicator" style="color:var(--fg-muted)">⬤ connecting…</span></div>{% endblock %}
+{% block header_sub %}<div class="header-sub">Authenticated · Wipes in <span id="ttlDisplay">2h 00m</span>{% if sse_enabled %} · <span id="liveIndicator" style="color:var(--fg-muted)">⬤ connecting…</span>{% endif %}</div>{% endblock %}
 
 {% block content %}
 
@@ -82,7 +82,6 @@
   const sessionUrl  = window.location.href.split('?')[0];
   let   startTime   = Date.now();
   let   knownCount  = 0;
-  let   sseSource   = null;
 
   // ---------------------------------------------------------------------------
   // URL display
@@ -179,8 +178,8 @@
   // Session end states
   // ---------------------------------------------------------------------------
   function handleExpired(reason) {
-    if (sseSource) { sseSource.close(); sseSource = null; }
-    sessionAlive = false; // Stops polling from overwriting the message
+    sessionAlive = false;
+    {% if sse_enabled %}if (sseSource) { sseSource.close(); sseSource = null; }{% endif %} // Stops polling from overwriting the message
 
     const messages = {
       locked:  { cls: 'danger', text: '⚠ Session locked after too many failed attempts. All data has been permanently destroyed.' },
@@ -204,38 +203,14 @@
     // Flatten TTL bar
     document.getElementById('ttlBar').style.cssText = 'width:0%; background:var(--danger)';
 
-    // Kill live indicator
-    const live = document.getElementById('liveIndicator');
-    if (live) { live.textContent = '⬤ offline'; live.style.color = 'var(--fg-muted)'; }
-
     // Update page title
     document.querySelector('.header-title').textContent = 'Session Ended';
   }
 
-  // ---------------------------------------------------------------------------
-  // SSE
-  // ---------------------------------------------------------------------------
-  function connectSSE() {
-    if (sseSource) sseSource.close();
-    sseSource = new EventSource(`/${sid}/stream`);
 
-    sseSource.onopen = () => {
-      const el = document.getElementById('liveIndicator');
-      if (el) { el.textContent = '⬤ live'; el.style.color = 'var(--accent)'; }
-    };
 
-    sseSource.onmessage = async (e) => {
-      if (e.data === 'new_item')        await fetchItems();
-      if (e.data === 'session_expired') handleExpired('expired');
-      if (e.data === 'session_locked')  handleExpired('locked');
-      if (e.data === 'session_wiped')   handleExpired('wiped');
-    };
 
-    sseSource.onerror = () => {
-      const el = document.getElementById('liveIndicator');
-      if (el) { el.textContent = '⬤ reconnecting…'; el.style.color = 'var(--warn)'; }
-    };
-  }
+
 
   // ---------------------------------------------------------------------------
   // Add item — password sent automatically via cookie
@@ -292,60 +267,85 @@
   }
   async function doWipe() {
     closeWipe();
-    if (sseSource) { sseSource.close(); sseSource = null; }
+    {% if sse_enabled %}if (sseSource) { sseSource.close(); sseSource = null; }{% endif %}
     await fetch(`/${sid}/wipe`, { method: 'POST' });
     window.location.href = '/';
   }
 
   // ---------------------------------------------------------------------------
-  // Page Visibility API — force immediate state check when tab regains focus
-  // Browsers throttle SSE in background tabs, so events may be delayed.
-  // On visibility change we immediately check session status without waiting
-  // for the next heartbeat.
+  // SSE — real-time push (enabled via SSE_ENABLED config)
+  // ---------------------------------------------------------------------------
+  {% if sse_enabled %}
+  let sseSource = null;
+
+  function connectSSE() {
+    if (sseSource) sseSource.close();
+    sseSource = new EventSource(`/${sid}/stream`);
+
+    sseSource.onopen = () => {
+      const el = document.getElementById('liveIndicator');
+      if (el) { el.textContent = '⬤ live'; el.style.color = 'var(--accent)'; }
+    };
+
+    sseSource.onmessage = async (e) => {
+      if (e.data === 'new_item')        await fetchItems();
+      if (e.data === 'session_expired') handleExpired('expired');
+      if (e.data === 'session_locked')  handleExpired('locked');
+      if (e.data === 'session_wiped')   handleExpired('wiped');
+    };
+
+    sseSource.onerror = () => {
+      const el = document.getElementById('liveIndicator');
+      if (el) { el.textContent = '⬤ reconnecting…'; el.style.color = 'var(--warn)'; }
+    };
+  }
+  {% endif %}
+
+  // ---------------------------------------------------------------------------
+  // Page Visibility API — immediate check when tab regains focus
   // ---------------------------------------------------------------------------
   document.addEventListener('visibilitychange', async () => {
     if (document.visibilityState === 'visible') {
-      // Re-check session immediately
       const res = await fetch(`/${sid}/items`).catch(() => null);
       if (!res) return;
       if (res.status === 410) { handleExpired('locked');  return; }
       if (res.status === 404) { handleExpired('expired'); return; }
       const data = await res.json().catch(() => ({}));
-      // Check if server sent a wipe signal via a custom header
       renderItems(data.items || []);
-      // Reconnect SSE if it dropped while in background
-      if (!sseSource || sseSource.readyState === EventSource.CLOSED) {
-        connectSSE();
-      }
+      {% if sse_enabled %}
+      if (!sseSource || sseSource.readyState === EventSource.CLOSED) connectSSE();
+      {% endif %}
     }
   });
 
   // ---------------------------------------------------------------------------
-  // Polling fallback — checks session liveness every 10s regardless of
-  // tab visibility or focus. Covers the case where the tab is physically
-  // visible on screen but the SSE event was missed (background throttling,
-  // network hiccup, or the user is interacting with another screen).
-  // Cost: one lightweight HTTP request per 10s — negligible.
+  // Polling — fallback (SSE disabled) or safety net (SSE enabled)
+  // Interval: 10s without SSE, 30s with SSE (SSE handles real-time)
   // ---------------------------------------------------------------------------
   let sessionAlive = true;
 
   async function pollSessionStatus() {
-    if (!sessionAlive) return; // Already handled
+    if (!sessionAlive) return;
     const res = await fetch(`/${sid}/items`).catch(() => null);
-    if (!res) return; // Network error — will retry next tick
+    if (!res) return;
     if (res.status === 410) { sessionAlive = false; handleExpired('locked');  return; }
     if (res.status === 404) { sessionAlive = false; handleExpired('expired'); return; }
-    // 200 — session alive, update items if count changed (SSE may have missed it)
     const data = await res.json().catch(() => ({}));
     renderItems(data.items || []);
   }
 
-  setInterval(pollSessionStatus, 10_000);
+  {% if sse_enabled %}
+  setInterval(pollSessionStatus, 30_000);  // SSE handles real-time, poll as safety net
+  {% else %}
+  setInterval(pollSessionStatus, 10_000);  // No SSE — poll more frequently
+  {% endif %}
 
   // ---------------------------------------------------------------------------
   // Init — no password handling needed, server does it all
   // ---------------------------------------------------------------------------
   fetchItems();
+  {% if sse_enabled %}
   connectSSE();
+  {% endif %}
 </script>
 {% endblock %}

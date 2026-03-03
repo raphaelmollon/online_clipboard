@@ -50,6 +50,11 @@ SESSION_MAX_FAILED_ATTEMPTS: int = int(os.environ.get("SESSION_MAX_FAILED_ATTEMP
 # App
 # ---------------------------------------------------------------------------
 APP_VERSION: str = os.environ.get("APP_VERSION", "1.0.0")
+
+# SSE (Server-Sent Events) for real-time sync.
+# Set to false on shared hosting (Passenger queue saturation).
+# Fallback: polling every 10s.
+SSE_ENABLED: bool = os.environ.get("SSE_ENABLED", "true").lower() == "true"
 DEBUG: bool = os.environ.get("DEBUG", "false").lower() == "true"
 APP_HOST: str = os.environ.get("APP_HOST", "0.0.0.0")
 APP_PORT: int = int(os.environ.get("APP_PORT", 8000))
